@@ -35,10 +35,9 @@ const env = Object.assign({}, process.env, {
 });
 
 // Spawn the launcher as an interactive process
-const child = spawn(LAUNCHER_PATH, process.argv.slice(2), {
+const child = spawn('/bin/zsh', [LAUNCHER_PATH].concat(process.argv.slice(2)), {
   stdio: 'inherit',
   env: env,
-  shell: '/bin/zsh',
 });
 
 // Forward signals
