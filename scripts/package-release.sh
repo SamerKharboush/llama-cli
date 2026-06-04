@@ -59,9 +59,10 @@ INSTALL
 chmod +x "$STAGE_DIR/install.sh"
 
 cat > "$STAGE_DIR/README.md" <<'README'
-# llama.cpp Optimized Build for Intel Mac Pro
+# intellama — Optimized llama.cpp Build for Intel Mac Pro
 
-This archive contains a pinned llama.cpp build optimized for Intel x64 Mac Pro hardware.
+This archive contains a pinned llama.cpp build for the **intellama** package
+(`npm install -g intellama`). Optimized for Intel x64 Mac Pro hardware.
 
 Build flags:
 
@@ -84,7 +85,13 @@ cd llama-cpp-macpro
 ./install.sh
 ```
 
-Run the interactive launcher:
+Run the interactive launcher (it is launched via `intellama` once installed):
+
+```bash
+intellama
+```
+
+…or, if you installed the standalone archive only:
 
 ```bash
 /usr/local/llama-cpp/bin/llama-launcher.sh
