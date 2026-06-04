@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 # ╔══════════════════════════════════════════════════════════════╗
-# ║  llama-cli — Interactive llama.cpp Launcher                 ║
-# ║  Optimized for Intel Mac (Mac Pro 2013, Ivy Bridge)         ║
+# ║  intellama — Interactive llama.cpp Launcher                 ║
+# ║  (formerly llama-cli)  Optimized for Intel Mac Pro 2013    ║
 # ╚══════════════════════════════════════════════════════════════╝
 
 setopt KSH_ARRAYS
