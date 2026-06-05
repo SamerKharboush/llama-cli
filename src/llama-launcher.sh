@@ -4,8 +4,6 @@
 # ║  (formerly llama-cli)  Optimized for Intel Mac Pro 2013    ║
 # ╚══════════════════════════════════════════════════════════════╝
 
-setopt KSH_ARRAYS
-
 # ─── Paths (auto-detect from package install or env) ───────────
 SCRIPT_DIR="${0:A:h}"
 PACKAGE_DIR="${SCRIPT_DIR:h}"
@@ -18,6 +16,15 @@ CONFIG_DIR="$HOME/.config/llama-launcher"
 CONFIG_FILE="$CONFIG_DIR/settings.conf"
 LOG_DIR="$CONFIG_DIR/logs"
 PID_FILE="$CONFIG_DIR/server.pid"
+
+# Read version from package.json (written at postinstall time as a fallback)
+VERSION_FILE="$PACKAGE_DIR/VERSION"
+if [[ -f "$VERSION_FILE" ]]; then
+    VERSION=$(cat "$VERSION_FILE" 2>/dev/null | tr -d '[:space:]')
+fi
+if [[ -z "$VERSION" ]]; then
+    VERSION=$(node -p "require('$PACKAGE_DIR/package.json').version" 2>/dev/null) || VERSION="unknown"
+fi
 
 # Hardware detection results (set by detect_hardware)
 typeset -g HW_PHYSICAL_CORES=0
@@ -93,10 +100,21 @@ set_setting() {
     case "$key" in
         spec_type)
             case "$value" in
-                off|ngram-simple|ngram-mod|ngram-cache|draft-mtp) ;;
-                *) print -r -- "[intellama] invalid spec_type: $value"; return 1 ;;
+                off|none|ngram-simple|ngram-mod|ngram-cache|draft-mtp) ;;
+                *) print -r -- "[intellama] invalid spec_type: $value (allowed: off|ngram-simple|ngram-mod|ngram-cache|draft-mtp)"; return 1 ;;
             esac
             ;;
+        n_gpu_layers|threads|threads_batch|batch_size|ubatch_size|ctx_size|n_predict|parallel_seqs|repeat_last_n|moe_cpu_layers|fit_target|prompt_cache|cache_reuse|keep_first_n|port|spec_n_max|spec_n_min|spec_ngram_simple_size_n|spec_ngram_simple_size_m|spec_ngram_simple_min_hits|spec_ngram_mod_n_min|spec_ngram_mod_n_max|spec_ngram_mod_n_match|cache_ram_mib)
+            if ! [[ "$value" =~ ^-?[0-9]+$ ]]; then
+                print -r -- "[intellama] invalid $key (not an integer): $value"; return 1
+            fi
+            ;;
+        rope_scale|rope_freq_base|rope_freq_scale)
+            if ! [[ "$value" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
+                print -r -- "[intellama] invalid $key (not a number): $value"; return 1
+            fi
+            ;;
+        *) ;;
     esac
     eval "S_$key=\"\$value\""
 }
@@ -150,7 +168,7 @@ banner() {
     clear
     echo -e "${C}"
     echo '  ╔═══════════════════════════════════════════════════════╗'
-    echo '  ║         llama-cli v1.1.0                             ║'
+    printf '  ║         intellama %-34s║\n' "v$VERSION"
     echo '  ║         Optimized llama.cpp for Intel Mac             ║'
     echo '  ╚═══════════════════════════════════════════════════════╝'
     echo -e "${RST}"
@@ -158,7 +176,7 @@ banner() {
 
 save_config() {
     mkdir -p "$CONFIG_DIR"
-    echo "# llama-cli config" > "$CONFIG_FILE"
+    echo "# intellama v$VERSION config" > "$CONFIG_FILE"
     for key in "${ALL_KEYS[@]}"; do
         echo "$key=$(get_setting "$key")" >> "$CONFIG_FILE"
     done
@@ -168,7 +186,10 @@ load_config() {
     [[ -f "$CONFIG_FILE" ]] || return
     while IFS='=' read -r key value; do
         [[ "$key" =~ ^# || -z "$key" ]] && continue
-        set_setting "$key" "$value"
+        if ! set_setting "$key" "$value"; then
+            local default_var="S_$key"
+            print -r -- "[intellama] config: invalid $key='$value', reset to default (${(P)default_var})"
+        fi
     done < "$CONFIG_FILE"
 }
 
@@ -415,8 +436,16 @@ build_command() {
     [[ "$(get_setting rope_freq_base)" != "0.0" ]] && cmd+=" --rope-freq-base $(get_setting rope_freq_base)"
     [[ "$(get_setting rope_freq_scale)" != "0.0" ]] && cmd+=" --rope-freq-scale $(get_setting rope_freq_scale)"
     [[ "$(get_setting fit_target)" != "0" ]] && cmd+=" --fit-target $(get_setting fit_target)"
-    [[ "$(get_setting prompt_cache)" != "0" ]] && cmd+=" --cache-ram $(get_setting prompt_cache)"
-    [[ "$(get_setting cache_reuse)" != "0" ]] && cmd+=" --cache-reuse $(get_setting cache_reuse)"
+    local creuse=$(get_setting cache_reuse)
+    [[ "$creuse" =~ ^[1-9][0-9]*$ ]] && cmd+=" --cache-reuse $creuse"
+    # cache_ram_mib is the canonical MiB cap; prompt_cache is the legacy alias.
+    local crammib=$(get_setting cache_ram_mib)
+    if [[ "$crammib" =~ ^[1-9][0-9]*$ ]]; then
+        cmd+=" --cache-ram $crammib"
+    else
+        local cram=$(get_setting prompt_cache)
+        [[ "$cram" =~ ^[1-9][0-9]*$ ]] && cmd+=" --cache-ram $cram"
+    fi
     # full_swa_cache and keep_first_n are retained in config for compatibility
     # with frontends that expose them, but this pinned llama-server does not.
 
@@ -572,7 +601,7 @@ main() {
         echo -e "${W}Actions:${RST}"
         echo -e "${D}────────────────────────────────────────────────${RST}"
         echo -e "  ${G}1${RST}) Select Model"
-        echo -e "  ${G}2${RST}) Configure Settings (35 options)"
+        echo -e "  ${G}2${RST}) Configure Settings (${#ALL_KEYS[@]} options)"
         echo -e "  ${G}3${RST}) Start Server"
         echo -e "  ${G}4${RST}) Stop Server"
         echo -e "  ${G}5${RST}) Eject Model (unload without stopping)"

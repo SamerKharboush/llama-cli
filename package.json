@@ -1,6 +1,6 @@
 {
   "name": "intellama",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Intellama — optimized llama.cpp terminal launcher for Intel x64 Macs, tuned for Mac Pro 2013 Ivy Bridge with Apple Accelerate BLAS.",
   "main": "bin/intellama.js",
   "bin": {

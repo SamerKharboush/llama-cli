@@ -12,6 +12,7 @@ const PACKAGE_DIR = path.resolve(__dirname, '..');
 const VENDOR_DIR = path.join(PACKAGE_DIR, 'vendor');
 const TARBALL = path.join(VENDOR_DIR, 'llama-cpp-macpro.tar.gz');
 const EXTRACT_DIR = path.join(VENDOR_DIR, 'llama-cpp-macpro');
+const PKG = require(path.join(PACKAGE_DIR, 'package.json'));
 const CONFIG_DIR = path.join(process.env.HOME, '.config', 'llama-launcher');
 const SERVER_BIN = path.join(EXTRACT_DIR, 'bin', 'llama-server');
 
@@ -52,6 +53,9 @@ try {
       }
     }
   }
+
+  // Write VERSION file for the launcher to read at runtime
+  fs.writeFileSync(path.join(EXTRACT_DIR, 'VERSION'), PKG.version + '\n');
 
   // Create config directory
   if (!fs.existsSync(CONFIG_DIR)) {
