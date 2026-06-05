@@ -19,6 +19,17 @@ CONFIG_FILE="$CONFIG_DIR/settings.conf"
 LOG_DIR="$CONFIG_DIR/logs"
 PID_FILE="$CONFIG_DIR/server.pid"
 
+# Hardware detection results (set by detect_hardware)
+typeset -g HW_PHYSICAL_CORES=0
+typeset -g HW_LOGICAL_CORES=0
+typeset -g HW_MEM_GB=0
+typeset -g HW_CPU_BRAND=""
+typeset -g HW_HAS_AVX=0
+typeset -g HW_HAS_AVX2=0
+typeset -g HW_HAS_FMA=0
+typeset -g HW_HAS_F16C=0
+typeset -g HW_IS_IVYBRIDGE=0
+
 # ─── Colors ────────────────────────────────────────────────────
 R='\033[0;31m' G='\033[0;32m' Y='\033[0;33m' B='\033[0;34m'
 M='\033[0;35m' C='\033[0;36m' W='\033[1;37m' D='\033[0;90m'
@@ -29,8 +40,8 @@ S_n_gpu_layers="0"
 S_ctx_size="8192"
 S_batch_size="2048"
 S_ubatch_size="512"
-S_threads="12"
-S_threads_batch="12"
+S_threads="0"
+S_threads_batch="0"
 S_n_predict="-1"
 S_parallel_seqs="1"
 S_repeat_last_n="64"
@@ -61,17 +72,66 @@ S_auto_start="off"
 S_default_model=""
 S_fit="on"
 S_fit_target="0"
+S_spec_type="off"
+S_spec_draft_model=""
+S_spec_n_max="16"
+S_spec_n_min="0"
 
 ALL_KEYS=(n_gpu_layers ctx_size batch_size ubatch_size threads threads_batch
   n_predict parallel_seqs repeat_last_n rope_scaling rope_scale rope_freq_base
   rope_freq_scale cache_type_k cache_type_v flash_attn mlock no_mmap
   cont_batching ctx_shift host port jinja jinja_template keep_moe_cpu
   moe_cpu_layers disable_kv_offload override_tensor prompt_cache cache_reuse
-  full_swa_cache keep_first_n auto_start default_model fit fit_target)
+  full_swa_cache keep_first_n auto_start default_model fit fit_target
+  spec_type spec_draft_model spec_n_max spec_n_min)
 
 # ─── Helpers ───────────────────────────────────────────────────
 get_setting() { eval "echo \$S_$1"; }
-set_setting() { eval "S_$1=\"\$2\""; }
+set_setting() {
+    local key="$1"
+    local value="$2"
+    case "$key" in
+        spec_type)
+            case "$value" in
+                off|ngram-simple|ngram-mod|ngram-cache|draft-mtp) ;;
+                *) print -r -- "[intellama] invalid spec_type: $value"; return 1 ;;
+            esac
+            ;;
+    esac
+    eval "S_$key=\"\$value\""
+}
+
+detect_hardware() {
+  HW_PHYSICAL_CORES=$(sysctl -n hw.physicalcpu 2>/dev/null || echo 0)
+  HW_LOGICAL_CORES=$(sysctl -n hw.logicalcpu 2>/dev/null || echo "$HW_PHYSICAL_CORES")
+  local mem_bytes
+  mem_bytes=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
+  HW_MEM_GB=$(( mem_bytes / 1073741824 ))
+  HW_CPU_BRAND=$(sysctl -n machdep.cpu.brand_string 2>/dev/null | sed 's/^ *//;s/ *$//')
+  local feats leaf7
+  feats=$(sysctl -n machdep.cpu.features 2>/dev/null || echo "")
+  leaf7=$(sysctl -n machdep.cpu.leaf7_features 2>/dev/null || echo "")
+  [[ "$feats" == *AVX1.0* || "$feats" == *AVX* ]] && HW_HAS_AVX=1
+  [[ "$leaf7" == *AVX2* ]] && HW_HAS_AVX2=1
+  [[ "$feats" == *FMA* ]] && HW_HAS_FMA=1
+  [[ "$feats" == *F16C* ]] && HW_HAS_F16C=1
+  # Ivy Bridge = AVX+F16C, no AVX2, no FMA
+  if [[ $HW_HAS_AVX -eq 1 && $HW_HAS_AVX2 -eq 0 && $HW_HAS_FMA -eq 0 && $HW_HAS_F16C -eq 1 ]]; then
+    HW_IS_IVYBRIDGE=1
+  fi
+}
+
+show_hardware() {
+    banner
+    echo -e "${W}Hardware Information:${RST}"
+    echo -e "${D}────────────────────────────────────────────────${RST}"
+    echo -e "  CPU Brand:     ${C}$HW_CPU_BRAND${RST}"
+    echo -e "  Physical Cores:${C}$HW_PHYSICAL_CORES${RST}"
+    echo -e "  Logical Cores: ${C}$HW_LOGICAL_CORES${RST}"
+    echo -e "  Memory (RAM):  ${C}$HW_MEM_GB GB${RST}"
+    echo -e "  Features:      AVX=${C}$HW_HAS_AVX${RST} AVX2=${C}$HW_HAS_AVX2${RST} FMA=${C}$HW_HAS_FMA${RST} F16C=${C}$HW_HAS_F16C${RST}"
+    echo -e "  Ivy Bridge:    ${C}$HW_IS_IVYBRIDGE${RST}"
+}
 
 is_our_server_running() {
     [[ -f "$PID_FILE" ]] || return 1
@@ -230,6 +290,10 @@ configure_settings() {
         printf "  ${G}33${RST}) Server Port               ${C}%-10s${RST}\n" "$(get_setting port)"
         printf "  ${G}34${RST}) Server Host               ${C}%-10s${RST}\n" "$(get_setting host)"
         printf "  ${G}35${RST}) Auto Start Server         ${C}%-10s${RST}\n" "$(get_setting auto_start)"
+        printf "  ${G}36${RST}) Speculative Type          ${C}%-10s${RST}\n" "$(get_setting spec_type)"
+        printf "  ${G}37${RST}) Spec Draft Model          ${C}%-20s${RST}\n" "$(get_setting spec_draft_model)"
+        printf "  ${G}38${RST}) Spec Draft N Max         ${C}%-10s${RST}\n" "$(get_setting spec_n_max)"
+        printf "  ${G}39${RST}) Spec Draft N Min         ${C}%-10s${RST}\n" "$(get_setting spec_n_min)"
         echo ""
         echo -e "  ${Y} s${RST}) Save & Return"
         echo -e "  ${Y} r${RST}) Reset to Defaults"
@@ -274,6 +338,10 @@ configure_settings() {
             33) echo -n "Port [$(get_setting port)]: "; read v; [[ -n "$v" ]] && set_setting port "$v" ;;
             34) echo -n "Host [$(get_setting host)]: "; read v; [[ -n "$v" ]] && set_setting host "$v" ;;
             35) toggle "auto_start" ;;
+            36) echo -n "Spec Type (off|ngram-simple|ngram-mod|ngram-cache|draft-mtp) [$(get_setting spec_type)]: "; read v; [[ -n "$v" ]] && set_setting spec_type "$v" ;;
+            37) echo -n "Spec Draft Model Path [$(get_setting spec_draft_model)]: "; read v; set_setting spec_draft_model "$v" ;;
+            38) echo -n "Spec Draft N Max [$(get_setting spec_n_max)]: "; read v; [[ -n "$v" ]] && set_setting spec_n_max "$v" ;;
+            39) echo -n "Spec Draft N Min [$(get_setting spec_n_min)]: "; read v; [[ -n "$v" ]] && set_setting spec_n_min "$v" ;;
             s|S) save_config; return ;;
             r|R) reset_defaults ;;
         esac
@@ -282,7 +350,7 @@ configure_settings() {
 
 reset_defaults() {
     S_n_gpu_layers="0"; S_ctx_size="8192"; S_batch_size="2048"
-    S_ubatch_size="512"; S_threads="12"; S_threads_batch="12"
+    S_ubatch_size="512"; S_threads="0"; S_threads_batch="0"
     S_n_predict="-1"; S_parallel_seqs="1"; S_repeat_last_n="64"
     S_rope_scaling="none"; S_rope_scale="1.0"; S_rope_freq_base="0.0"
     S_rope_freq_scale="0.0"; S_cache_type_k="q4_0"; S_cache_type_v="q4_0"
@@ -293,6 +361,7 @@ reset_defaults() {
     S_override_tensor=""; S_prompt_cache="0"; S_cache_reuse="0"
     S_full_swa_cache="off"; S_keep_first_n="0"; S_auto_start="off"
     S_default_model=""; S_fit="on"; S_fit_target="0"
+    S_spec_type="off"; S_spec_draft_model=""; S_spec_n_max="16"; S_spec_n_min="0"
     echo -e "  ${G}Settings reset${RST}"
     sleep 1
 }
@@ -323,6 +392,19 @@ build_command() {
     [[ "$(get_setting jinja)" == "on" ]] && cmd+=" --jinja"
     [[ "$(get_setting disable_kv_offload)" == "on" ]] && cmd+=" --no-kv-offload"
     [[ "$(get_setting fit)" == "on" ]] && cmd+=" --fit on" || cmd+=" --fit off"
+
+    case "$(get_setting spec_type)" in
+        off) ;;
+        ngram-simple|ngram-mod|ngram-cache)
+            cmd+=" --spec-type $(get_setting spec_type)" ;;
+        draft-mtp)
+            cmd+=" --spec-type draft-mtp"
+            [[ -n "$(get_setting spec_draft_model)" ]] && cmd+=" --spec-draft-model '$(get_setting spec_draft_model)'" ;;
+    esac
+    if [[ "$(get_setting spec_type)" != "off" ]]; then
+        cmd+=" --spec-draft-n-max $(get_setting spec_n_max)"
+        [[ "$(get_setting spec_n_min)" -gt 0 ]] && cmd+=" --spec-draft-n-min $(get_setting spec_n_min)"
+    fi
 
     [[ -n "$(get_setting jinja_template)" ]] && cmd+=" --chat-template '$(get_setting jinja_template)'"
     [[ -n "$(get_setting override_tensor)" ]] && cmd+=" --override-tensor '$(get_setting override_tensor)'"
@@ -467,7 +549,11 @@ view_log() {
 # ─── Main Menu ─────────────────────────────────────────────────
 main() {
     mkdir -p "$CONFIG_DIR" "$LOG_DIR"
+    detect_hardware
     load_config
+    [[ "$S_threads" == "0" && $HW_PHYSICAL_CORES -gt 0 ]] && S_threads=$HW_PHYSICAL_CORES
+    [[ "$S_threads_batch" == "0" && $HW_PHYSICAL_CORES -gt 0 ]] && S_threads_batch=$HW_PHYSICAL_CORES
+    [[ $HW_IS_IVYBRIDGE -eq 1 && "$S_spec_n_max" -gt 16 ]] && S_spec_n_max="16"
     if [[ ! -x "$SERVER_BIN" ]]; then
         echo -e "${R}llama-server not found or not executable:${RST} $SERVER_BIN"
         echo "Set LLAMA_DIR to a directory that contains bin/llama-server."
@@ -493,6 +579,7 @@ main() {
         echo -e "  ${G}6${RST}) View Server Log"
         echo -e "  ${G}7${RST}) Purge Memory"
         echo -e "  ${G}8${RST}) Benchmark Current Model"
+        echo -e "  ${G}h${RST}) Show Hardware"
         echo ""
         echo -e "  ${R}q${RST}) Quit"
         echo ""
@@ -526,6 +613,7 @@ main() {
                     echo -e "${Y}Select a model first${RST}"; sleep 1
                 fi
                 ;;
+            h|H) show_hardware; echo ""; echo -n "Press Enter..."; read _ ;;
             q|Q) stop_server 2>/dev/null; echo -e "${G}Goodbye!${RST}"; exit 0 ;;
         esac
     done
