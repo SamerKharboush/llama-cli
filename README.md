@@ -2,6 +2,12 @@
 
 Optimized terminal launcher for local GGUF models on Intel x64 Macs, built around a pinned `llama.cpp` binary package and an interactive `intellama` menu (formerly `llama-cli`).
 
+> **v1.2.2 — Server discovery + unload endpoint**
+> - `eject` / `stop` / `purge` now detect a `llama-server` already on the port (even if intellama didn't start it) and report honestly instead of printing "done" while the foreign server keeps running.
+> - `eject` calls `POST /models/unload` (llama.cpp master) with a fallback to legacy `POST /unload`. No more silent 404 false-positive.
+> - `stop` on a foreign server asks for confirmation before killing the PID (`lsof -ti :port` discovery).
+> - `server_status` annotates foreign-server ownership with a clear note.
+
 > **v1.2.1 — Bugfixes + Ivy Bridge perf track + GPU probe**
 > - Banner reads version from `package.json` (no more stale "v1.1.0").
 > - Settings menu count derives from `ALL_KEYS` (no more stale "35 options").

@@ -243,15 +243,62 @@ probe_gpu_compute() {
 }
 
 is_our_server_running() {
-    [[ -f "$PID_FILE" ]] || return 1
-    local pid=$(cat "$PID_FILE")
-    kill -0 "$pid" 2>/dev/null || { rm -f "$PID_FILE"; return 1; }
-    ps -o command= -p "$pid" 2>/dev/null | grep -q "$SERVER_BIN" || { rm -f "$PID_FILE"; return 1; }
-    return 0
+    # True when (PID file points at a live llama-server) AND (port responds
+    # to /health). The port probe is the source of truth: if something is
+    # serving on the port, the launcher is operating in an attached state
+    # and stop_server/eject_model must be able to act.
+    if [[ -f "$PID_FILE" ]]; then
+        local pid=$(cat "$PID_FILE")
+        if kill -0 "$pid" 2>/dev/null \
+            && ps -o command= -p "$pid" 2>/dev/null | grep -q "$SERVER_BIN"; then
+            return 0
+        fi
+        rm -f "$PID_FILE"
+    fi
+    # No tracked PID — but the port might still be serving (foreign server).
+    if port_responds; then
+        # Record the foreign PID for downstream commands. Don't claim it.
+        local fp=$(foreign_server_pid | head -1)
+        [[ -n "$fp" ]] && echo "$fp" > "$PID_FILE.foreign"
+        return 0
+    fi
+    rm -f "$PID_FILE.foreign"
+    return 1
 }
 
 get_our_pid() {
     [[ -f "$PID_FILE" ]] && cat "$PID_FILE" || echo ""
+}
+
+# Returns 0 if the configured host:port answers /health as a llama-server.
+# Does not care whether the launcher started it.
+port_responds() {
+    local host=$(get_setting host)
+    local port=$(get_setting port)
+    local out
+    out=$(curl -s --max-time 2 "http://$host:$port/health" 2>/dev/null)
+    [[ "$out" == *"\"status\":\"ok\""* || "$out" == *'"status":"ok"'* ]]
+}
+
+# Returns the PID(s) listening on the configured port, one per line.
+# Empty if nothing is bound. Filters to llama-server (best-effort) so we
+# don't accidentally grab an unrelated process on a wrong-config port.
+foreign_server_pid() {
+    local port=$(get_setting port)
+    local pids
+    pids=$(lsof -ti :"$port" -sTCP:LISTEN 2>/dev/null)
+    [[ -z "$pids" ]] && return 0
+    while IFS= read -r pid; do
+        local cmd
+        cmd=$(ps -o command= -p "$pid" 2>/dev/null)
+        if [[ "$cmd" == *llama-server* ]]; then
+            echo "$pid"
+        fi
+    done <<< "$pids"
+}
+
+get_foreign_pid() {
+    [[ -f "$PID_FILE.foreign" ]] && cat "$PID_FILE.foreign" || echo ""
 }
 
 # ─── Functions ─────────────────────────────────────────────────
@@ -627,18 +674,46 @@ start_server() {
 }
 
 stop_server() {
-    if is_our_server_running; then
-        local pid=$(get_our_pid)
+    # Make sure we've observed the current state — populates PID_FILE.foreign
+    # if a foreign server is on the port.
+    is_our_server_running || true
+
+    local pid=$(get_our_pid)
+    local fp=$(get_foreign_pid)
+
+    if [[ -n "$pid" ]]; then
         echo -e "${Y}Stopping server (PID: $pid)...${RST}"
         kill "$pid" 2>/dev/null
-        sleep 1
+        for _ in 1 2 3 4 5; do
+            sleep 1
+            kill -0 "$pid" 2>/dev/null || break
+        done
         kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
-        rm -f "$PID_FILE"
+        rm -f "$PID_FILE" "$PID_FILE.foreign"
         echo -e "${G}Server stopped${RST}"
-    else
-        echo -e "${D}Server is not running${RST}"
-        rm -f "$PID_FILE"
+        return
     fi
+
+    if [[ -n "$fp" ]]; then
+        echo -e "${Y}A llama-server (PID $fp) is listening on the configured port"
+        echo -e "but intellama did not start it. Stop it? [y/N]${RST}"
+        read -r yn
+        if [[ "$yn" == "y" || "$yn" == "Y" ]]; then
+            kill "$fp" 2>/dev/null
+            for _ in 1 2 3 4 5; do
+                sleep 1
+                kill -0 "$fp" 2>/dev/null || break
+            done
+            kill -0 "$fp" 2>/dev/null && kill -9 "$fp" 2>/dev/null
+            rm -f "$PID_FILE.foreign"
+            echo -e "${G}Server stopped${RST}"
+        else
+            echo -e "${D}Cancelled.${RST}"
+        fi
+        return
+    fi
+
+    echo -e "${D}Server is not running${RST}"
 }
 
 eject_model() {
@@ -647,13 +722,36 @@ eject_model() {
         return
     fi
     echo -e "${Y}Ejecting model...${RST}"
-    local result=$(curl -s -X POST "http://$(get_setting host):$(get_setting port)/unload" 2>/dev/null)
-    if [[ -n "$result" ]]; then
-        echo -e "${G}Model ejected${RST}"
-    else
-        echo -e "${Y}API unload not available. Stopping server...${RST}"
-        stop_server
+    local host=$(get_setting host)
+    local port=$(get_setting port)
+    local fp=$(get_foreign_pid)
+    if [[ -n "$fp" && -z "$(get_our_pid)" ]]; then
+        echo -e "${Y}Detected foreign llama-server (PID $fp) on $host:$port.${RST}"
+        echo -e "${Y}The launcher did not start this server. To unload the model,"
+        echo -e "you must stop the server. Use option 4 to stop it (confirmation"
+        echo -e "will appear). For a true API unload without stopping, restart the"
+        echo -e "server under intellama (option 3).${RST}"
+        return 0
     fi
+
+    local result
+    # llama.cpp master: POST /models/unload
+    result=$(curl -s -X POST "http://$host:$port/models/unload" 2>/dev/null)
+    if [[ -z "$result" || "$result" == *"404"* || "$result" == *"not_found"* ]]; then
+        # Legacy llama.cpp: POST /unload
+        result=$(curl -s -X POST "http://$host:$port/unload" 2>/dev/null)
+    fi
+
+    if [[ -n "$result" ]] && ! echo "$result" | grep -qiE "not_found|404|error"; then
+        echo -e "${G}Model ejected${RST}"
+        return 0
+    fi
+
+    # Both endpoints 404'd or returned an error: the server is running but the
+    # unload route is missing (very old build, or a non-llama.cpp server).
+    # Don't lie. Tell the user and offer stop_server.
+    echo -e "${Y}API unload not available on this server build.${RST}"
+    echo -e "${Y}Use option 4 (Stop Server) to release the model.${RST}"
 }
 
 server_status() {
@@ -662,11 +760,15 @@ server_status() {
 
     if is_our_server_running; then
         local pid=$(get_our_pid)
+        local fp=$(get_foreign_pid)
         local mem=$(ps -o rss= -p "$pid" 2>/dev/null | awk '{printf "%.1f GB", $1/1024/1024}')
         local uptime=$(ps -o etime= -p "$pid" 2>/dev/null | xargs)
 
         echo -e "  Status:   ${G}Running${RST} (PID: ${C}$pid${RST})"
         echo -e "  Memory:   ${C}$mem${RST}   Uptime: ${C}$uptime${RST}"
+        if [[ -n "$fp" && "$fp" != "$pid" ]]; then
+            echo -e "  ${Y}Note: intellama did not start this server.${RST}"
+        fi
 
         local health=$(curl -s "http://$(get_setting host):$(get_setting port)/health" 2>/dev/null)
         if echo "$health" | grep -q ok; then
@@ -762,7 +864,7 @@ main() {
             4) stop_server; sleep 1 ;;
             5) eject_model; sleep 2 ;;
             6) view_log; echo ""; echo -n "Press Enter..."; read _ ;;
-            7) sudo purge 2>/dev/null && echo -e "${G}Done${RST}" || echo -e "${Y}Needs sudo${RST}"; sleep 1 ;;
+            7) stop_server; sudo purge 2>/dev/null && echo -e "${G}Memory purged${RST}" || echo -e "${Y}sudo purge skipped${RST}"; sleep 1 ;;
             8)
                 if [[ -n "$SELECTED_MODEL" ]]; then
                     "$BENCH_BIN" -m "$SELECTED_MODEL" -ngl 0 -t "$(get_setting threads)" 2>&1 | tail -20
