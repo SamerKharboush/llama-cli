@@ -1,4 +1,3 @@
-tap "moltenvk/vulkan"
 brew "molten-vk"
 brew "vulkan-headers"
 brew "vulkan-loader"
