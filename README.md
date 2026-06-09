@@ -2,6 +2,12 @@
 
 Optimized terminal launcher for local GGUF models on Intel x64 Macs, built around a pinned `llama.cpp` binary package and an interactive `intellama` menu (formerly `llama-cli`).
 
+> **v1.3.0-alpha — MLC-LLM Phase 0 prerequisites**
+> - New `scripts/setup-mlc.sh` brings the box to MLC-ready state in one command.
+> - New `docs/gpu-mlc-setup.md` covers install + troubleshooting.
+> - `npm test` gains a `zsh -n scripts/setup-mlc.sh` gate.
+> - Note: current x86_64 macOS MLC nightly wheels import-fail in `tvm_ffi` on Python 3.12; Vulkan detection succeeds on both D700s.
+
 > **v1.2.3 — Select actually loads + GPU probe env vars**
 > - `select_model` now detects a running server (ours or foreign) and asks "Stop the current server and start '<new>'? [y/N]". Same-model picks skip the prompt.
 > - New `gpu_probe_env` setting (default `MTL_DEBUG_LAYER,MTL_SHADER_VALIDATION,GGML_METAL_DEVICE`) — the `g` menu probe exports any listed var that is set in your shell, so you can test Metal/Vulkan env knobs without code changes.
